@@ -1,77 +1,67 @@
-require('dotenv').config();
+// server.js
+// AttendIQ Backend — application entry point.
 
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
+const morgan = require('morgan');
 
-const authRoutes = require('./routes/authRoutes');
-const apiRoutes = require('./routes/apiRoutes');
-const adminRoutes = require('./routes/adminRoutes');
+const config = require('./config/config');
+const { testConnection } = require('./config/db');
+const apiRoutes = require('./routes');
+const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// SECURITY
-app.use(helmet());
+// ── Global middleware ──────────────────────────────────────────────────
+app.use(helmet());                                   // secure HTTP headers
+app.use(cors({ origin: config.corsOrigin, credentials: true }));
+app.use(express.json({ limit: '1mb' }));              // parse JSON bodies
+app.use(express.urlencoded({ extended: true }));
+if (config.env !== 'test') {
+  app.use(morgan(config.env === 'development' ? 'dev' : 'combined'));
+}
 
-app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    'https://adorable-alpaca-2bd7e9.netlify.app',
-  ],
-  credentials: true,
-}));
-
-// RATE LIMIT
-app.use(rateLimit({
-  windowMs: 60 * 1000,
-  max: 100,
-}));
-
-app.use('/api/auth', rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-}));
-
-// BODY PARSER
-app.use(express.json({ limit: '1mb' }));
-
-// ROOT ROUTE
+// ── Root + health check ───────────────────────────────────────────────
+// A bare GET / is what most hosting platforms (and curious browsers) hit
+// first, so it gets a friendly response instead of falling through to 404.
 app.get('/', (req, res) => {
-  res.send('AttendIQ Backend Running 🚀');
-});
-
-// HEALTH CHECK
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    time: new Date()
+  res.status(200).json({
+    success: true,
+    message: 'AttendIQ backend is running',
+    docs: '/health for a lightweight status check, /api/* for the REST API',
   });
 });
 
-// API ROUTES
-app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes);
+app.get('/health', (req, res) => {
+  res.status(200).json({ success: true, message: 'AttendIQ backend is running', env: config.env });
+});
+
+// ── API routes ──────────────────────────────────────────────────────────
 app.use('/api', apiRoutes);
 
-// 404
-app.use((req, res) => {
-  res.status(404).json({
-    message: `Route ${req.path} not found`
-  });
-});
+// ── 404 + error handling (must be registered last) ──────────────────────
+app.use(notFound);
+app.use(errorHandler);
 
-// ERROR HANDLER
-app.use((err, req, res, next) => {
-  console.error(err);
+// ── Boot ────────────────────────────────────────────────────────────────
+const start = async () => {
+  try {
+    const now = await testConnection();
+    // eslint-disable-next-line no-console
+    console.log(`PostgreSQL connected — server time: ${now}`);
 
-  res.status(500).json({
-    message: 'Internal server error'
-  });
-});
+    app.listen(config.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`AttendIQ backend listening on port ${config.port} [${config.env}]`);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to connect to PostgreSQL. Check your .env settings.', err.message);
+    process.exit(1);
+  }
+};
 
-// START SERVER
-app.listen(PORT, () => {
-  console.log(`✅ AttendIQ backend running on port ${PORT}`);
-});
+start();
+
+module.exports = app; // exported for testing (e.g. supertest)
